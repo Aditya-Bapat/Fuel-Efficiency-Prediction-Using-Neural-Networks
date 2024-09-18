@@ -1,0 +1,181 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sb
+import plotly.express as px
+import plotly.graph_objects as go
+import tensorflow as tf
+from tensorflow import keras
+from keras import layers
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
+import warnings
+warnings.filterwarnings('ignore')
+
+# Load data
+df = pd.read_csv('auto-mpg.csv')
+
+# Data preprocessing
+df = df[df['horsepower'] != '?']
+df['horsepower'] = df['horsepower'].astype(int)
+
+# Drop unnecessary columns
+df.drop('displacement', axis=1, inplace=True)
+
+# Group by 'cylinders' and 'origin' and calculate the mean MPG
+grouped_cylinders = df.groupby('cylinders').mean()['mpg'].reset_index()
+grouped_origin = df.groupby('origin').mean()['mpg'].reset_index()
+
+# Create interactive bar charts for 'cylinders' and 'origin'
+fig1 = px.bar(grouped_cylinders, x='cylinders', y='mpg',
+              title='Average MPG by Cylinders',
+              labels={'mpg': 'Average MPG', 'cylinders': 'Cylinders'},
+              text='mpg')
+
+fig2 = px.bar(grouped_origin, x='origin', y='mpg',
+              title='Average MPG by Origin',
+              labels={'mpg': 'Average MPG', 'origin': 'Origin'},
+              text='mpg')
+
+fig1.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+fig1.update_layout(yaxis=dict(title='MPG'), xaxis=dict(title='Cylinders'))
+fig1.show()
+
+fig2.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+fig2.update_layout(yaxis=dict(title='MPG'), xaxis=dict(title='Origin'))
+fig2.show()
+
+# Feature scaling using StandardScaler
+features = df.drop(['mpg', 'car name'], axis=1)
+target = df['mpg'].values
+X_train, X_val, Y_train, Y_val = train_test_split(features, target, test_size=0.2, random_state=42)
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_val_scaled = scaler.transform(X_val)
+
+# Convert to TensorFlow datasets
+AUTO = tf.data.experimental.AUTOTUNE
+
+train_ds = (
+    tf.data.Dataset
+    .from_tensor_slices((X_train_scaled, Y_train))
+    .batch(32)
+    .prefetch(AUTO)
+)
+
+val_ds = (
+    tf.data.Dataset
+    .from_tensor_slices((X_val_scaled, Y_val))
+    .batch(32)
+    .prefetch(AUTO)
+)
+
+# Define the model
+model = keras.Sequential([
+    layers.Dense(64, activation='relu', input_shape=[X_train_scaled.shape[1]]),
+    layers.Dense(64, activation='relu'),
+    layers.Dense(1)
+])
+
+# Compile the model
+optimizer = keras.optimizers.Adam(learning_rate=0.0005)
+model.compile(
+    loss='huber_loss',
+    optimizer=optimizer,
+    metrics=['mape']
+)
+
+# Early stopping
+early_stopping = keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    patience=10,
+    restore_best_weights=True
+)
+
+# Train the model
+history = model.fit(train_ds, epochs=100, validation_data=val_ds, callbacks=[early_stopping])
+
+# Create DataFrame for plotting
+history_df = pd.DataFrame(history.history)
+
+# Create interactive line plot for loss and val_loss
+fig_loss = go.Figure()
+fig_loss.add_trace(go.Scatter(x=history_df.index, y=history_df['loss'],
+                    mode='lines',
+                    name='Training Loss'))
+fig_loss.add_trace(go.Scatter(x=history_df.index, y=history_df['val_loss'],
+                    mode='lines',
+                    name='Validation Loss'))
+fig_loss.update_layout(title='Training vs Validation Loss',
+                       xaxis_title='Epochs',
+                       yaxis_title='Loss')
+fig_loss.show()
+
+# Create interactive line plot for MAPE and val_mape
+fig_mape = go.Figure()
+fig_mape.add_trace(go.Scatter(x=history_df.index, y=history_df['mape'],
+                    mode='lines',
+                    name='Training MAPE'))
+fig_mape.add_trace(go.Scatter(x=history_df.index, y=history_df['val_mape'],
+                    mode='lines',
+                    name='Validation MAPE'))
+fig_mape.update_layout(title='Training vs Validation MAPE',
+                       xaxis_title='Epochs',
+                       yaxis_title='MAPE (%)')
+fig_mape.show()
+
+# Predict on validation data
+y_pred = model.predict(X_val_scaled)
+
+# Calculate RMSE and R-squared (R²)
+rmse = np.sqrt(mean_squared_error(Y_val, y_pred))
+r2 = r2_score(Y_val, y_pred)
+
+print(f"RMSE: {rmse}")
+print(f"R-squared (R²): {r2}")
+
+from sklearn.metrics import mean_absolute_error
+mae = mean_absolute_error(Y_val, y_pred)
+print(f"Mean Absolute Error (MAE): {mae}")
+
+from sklearn.metrics import explained_variance_score
+evs = explained_variance_score(Y_val, y_pred)
+print(f"Explained Variance Score: {evs}")
+
+from sklearn.metrics import mean_absolute_error
+def quantile_loss(y_true, y_pred, quantile):
+    errors = y_true - y_pred
+    return np.mean(np.maximum(quantile * errors, (quantile - 1) * errors))
+
+quantile = 0.5  # For median quantile loss
+q_loss = quantile_loss(Y_val, y_pred, quantile)
+print(f"Quantile Loss: {q_loss}")
+
+# Flatten y_pred to match the shape of Y_val
+y_pred_flat = y_pred.flatten()
+plt.figure(figsize=(10,6))
+plt.scatter(Y_val, Y_val - y_pred_flat, c='blue', label='Residuals')
+plt.hlines(y=0, xmin=min(Y_val), xmax=max(Y_val), colors='red', linestyles='dashed')
+plt.xlabel('Actual Values')
+plt.ylabel('Residuals')
+plt.title('Residuals Plot')
+plt.legend()
+plt.show()
+
+plt.figure(figsize=(10,6))
+errors = Y_val - y_pred.flatten()
+sb.histplot(errors, kde=True)
+plt.xlabel('Prediction Error')
+plt.title('Distribution of Prediction Errors')
+plt.show()
+
+plt.figure(figsize=(10,6))
+plt.scatter(Y_val, y_pred, alpha=0.3)
+plt.xlabel('Actual Values')
+plt.ylabel('Predicted Values')
+plt.title('Actual vs. Predicted Values')
+plt.plot([min(Y_val), max(Y_val)], [min(Y_val), max(Y_val)], 'r--')
+plt.show()
+
